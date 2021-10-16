@@ -1,0 +1,283 @@
+#!/system/bin/sh
+#
+
+#############################################################
+### 填写参数配置在最底部 ###
+#############################################################
+
+
+MODDIR=${0%/*} ;
+
+# TokenID,Token
+
+arToken="" ;
+
+
+# Get IPv4
+
+arWanIp4() {
+
+#网络方式获取
+hostIp=$(curl -s --connect-timeout 3 -m 5 https://v4.ipip.net)
+if [ ! "$hostIp" ]; then
+	hostIp=$(curl -s --connect-timeout 5 -m 8 https://v4.myip.la)
+fi
+echo $hostIp ;
+
+}
+
+# Get IPv6
+
+arWanIp6() {
+
+#硬件方式获取
+#hostIp=$(ifconfig $(nvram get wan0_ifname_t) | grep 'Global' | sed 's/.*addr: //g' | sed 's/\/.*//g' | sed -n '1p') ;
+#网络方式获取
+hostIp=$(curl -6 -s --connect-timeout 3 -m 5 https://v6.ipip.net)
+if [ ! "$hostIp" ]; then
+	hostIp=$(curl -6 -s --connect-timeout 5 -m 8 https://v6.myip.la)
+fi
+echo $hostIp ;
+
+}
+
+
+	
+# Dnspod Bridge
+# Args: type data
+
+arDdnsApi() {
+
+    agent="AnripDdns/6.1.0(wang@rehiy.com)"
+
+    apiurl="https://dnsapi.cn/${1:?'Info.Version'}"
+    params="login_token=$arToken&format=json&$2"
+
+    if type wget >/dev/null 2>&1; then
+        wget -q -O- --no-check-certificate -U $agent --post-data $params $apiurl
+    else
+        curl -s -A $agent -d $params $apiurl
+    fi
+
+}
+
+# Fetch Ids of Domain and Record
+# Args: recordType domain subdomain
+
+arDdnsIds() {
+
+    # Get Domain Id
+    domainId=$(arDdnsApi "Domain.Info" "domain=$2")
+    domainId=$(echo $domainId | sed 's/.*"id":"\([0-9]*\)".*/\1/')
+
+    if ! [ "$domainId" -gt 0 ] 2>/dev/null ;then
+        errMsg=$(echo $domainId | sed 's/.*"message":"\([^\"]*\)".*/\1/')
+        echo "arDdnsIds - $errMsg"
+        exit 0
+    fi
+
+    # Get Record Id
+    recordId=$(arDdnsApi "Record.List" "domain_id=$domainId&sub_domain=$3&record_type=$1")
+    recordId=$(echo $recordId | sed 's/.*"id":"\([0-9]*\)".*/\1/')
+
+    if ! [ "$recordId" -gt 0 ] 2>/dev/null ;then
+        errMsg=$(echo $recordId | sed 's/.*"message":"\([^\"]*\)".*/\1/')
+        echo "arDdnsIds - $errMsg"
+        exit 0
+    fi
+
+    echo $domainId $recordId
+}
+
+# Fetch Record Ip
+# Args: domainId recordId
+
+arDdnsRecordIp() {
+
+    # Get Record Ip
+    recordIp=$(arDdnsApi "Record.Info" "domain_id=$1&record_id=$2")
+    recordIp=$(echo $recordIp | sed 's/.*,"value":"\([0-9a-fA-F\.\:]*\)".*/\1/')
+
+    # Output Record Ip
+    case "$recordIp" in
+        [1-9]*)
+            echo $recordIp
+            exit 0
+        ;;
+        *)
+            errMsg=$(echo $recordIp | sed 's/.*"message":"\([^\"]*\)".*/\1/')
+            echo "arDdnsRecordIp - $errMsg"
+            exit 0
+        ;;
+    esac
+
+}
+
+# Update Record Ip
+# Args: domainId recordId subdomain hostIp recordType
+
+arDdnsUpdate() {
+
+    if [ -z "$5" ]; then
+        echo "arDdnsUpdate - Args number error"
+        exit 0
+    fi
+
+    # Update Ip
+    recordRs=$(arDdnsApi "Record.Modify" "domain_id=$1&record_id=$2&sub_domain=$3&record_type=$5&value=$4&record_line=%e9%bb%98%e8%ae%a4")
+    recordIp=$(echo $recordRs | sed 's/.*,"value":"\([0-9a-fA-F\.\:]*\)".*/\1/')
+    recordCd=$(echo $recordRs | sed 's/.*{"code":"\([0-9]*\)".*/\1/')
+
+    # Output Result
+    if [ "$recordIp" = "$4" ] && [ "$recordCd" = "1" ]; then
+        echo "arDdnsUpdate - success"
+        exit 0
+    else
+        errMsg=$(echo $recordRs | sed 's/.*,"message":"\([^"]*\)".*/\1/')
+        echo "arDdnsUpdate - $errMsg"
+        exit 0
+    fi
+
+}
+
+# DDNS Check
+# Args: Main Sub
+arDdnsCheck() {
+
+	battery=`dumpsys battery | grep 'level:' | sed 's/.*level\:\ //g'` ;
+	if [ -n "$battery" ]; then 
+		lastlevel=`cat $MODDIR/lastlevel` ;
+		#电量<=5且小于上次电量时，则关机(用于保护电池)
+		if [ "$battery" -le "5" -a "$lastlevel" -gt "5"  ]; then 
+			reboot -p ;
+			exit 0
+		fi ;
+		#电量=30且小于上次电量时(电量低或充电异常)，则推送通知
+		if [ "$Server" = "1" ]; then 
+			if [ "$battery" -le "30" -a "$lastlevel" -gt "30" ]; then 
+				curl -s https://sctapi.ftqq.com/$SendKey.send?title=电量低或充电异常 ;
+			fi ;
+		fi ;
+		lastlevel=$battery ;
+		echo "$lastlevel" > $MODDIR/lastlevel ;	
+	fi ;
+
+    if [ "$3" = "6" ]; then
+        recordType=AAAA
+        hostIp=$(arWanIp6)
+        if [ ! "$hostIp" ]; then
+	    echo "获取本机ipv6失败，可能是busybox的原因，建议卸载其它多余的busybox" > $MODDIR/Localipv6 ;
+            exit 0
+        fi	
+        #对比本机ip与线上ip
+        Onlineipv6=$(cat $MODDIR/Onlineipv6)
+        if [ "$hostIp" = "$Onlineipv6" ]; then
+            exit 0
+        fi
+	    #当本机ip与线上ip不相同时，把本机ip输出至本地文件，然后使用DNSPOD API实现域名动态解析ddns
+	    echo "$hostIp" > $MODDIR/Localipv6
+    else
+        recordType=A
+        hostIp=$(arWanIp4)		
+        if [ ! "$hostIp" ]; then
+	    echo "获取外网ipv4失败，可能是网络方式获取的链接失效，建议更换其它有效链接" > $MODDIR/Localipv4 ;
+            exit 0
+        fi	
+        #对比本机ip与线上ip
+        Onlineipv4=$(cat $MODDIR/Onlineipv4)
+        if [ "$hostIp" = "$Onlineipv4" ]; then
+            exit 0
+        fi
+	    #当本机ip与线上ip不相同时，把本机ip输出至本地文件，然后使用DNSPOD API实现域名动态解析ddns
+	    echo "$hostIp" > $MODDIR/Localipv4 ;
+    fi
+
+    echo "> Host Ip: $hostIp"
+    echo "> Record Type: $recordType"
+
+    echo "Fetching Ids of $2.$1"
+    ddnsIds=$(arDdnsIds "$recordType" "$1" "$2")
+
+    errCode=$?
+    echo "> Domain Ids: $ddnsIds"
+    if [ $errCode -ne 0 ]; then
+        exit 0
+    fi
+
+    echo "Checking Record for $2.$1"
+    lastIp=$(arDdnsRecordIp $ddnsIds)
+
+    errCode=$?
+    echo "> Last Ip: $lastIp"	
+	#把线上记录ip输出至本地文件
+    if [ "$3" = "6" ]; then
+	echo "$lastIp" > $MODDIR/Onlineipv6 ;
+    else
+	echo "$lastIp" > $MODDIR/Onlineipv4 ;
+    fi	
+    if [ $errCode -ne 0 ]; then
+        exit 0
+    fi
+
+    if [ "$lastIp" = "$hostIp" ]; then
+        echo "> Last Ip is the same as host Ip"
+		
+		#Server酱消息推送
+		if [ "$Server" = "1" ]; then
+			if [ "$3" = "6" ]; then
+				number=$(echo $lastIp | sed 's/[^:]*//g' | wc -c)
+				if [ "$number" = "8" ]; then
+					curl -s https://sctapi.ftqq.com/$SendKey.send?title=成功更新域名$2.$1的ipv6记录 ;
+				fi
+			else
+				number=$(echo $lastIp | sed 's/[^.]*//g' | wc -c)
+				if [ "$number" = "4" ]; then
+					curl -s https://sctapi.ftqq.com/$SendKey.send?title=成功更新域名$2.$1的ipv4记录 ;
+				fi			
+			fi
+		fi
+		
+        exit 0
+    fi
+
+    echo "Updating Record for $2.$1"
+    postRs=$(arDdnsUpdate $ddnsIds "$2" "$hostIp" "$recordType")
+	
+    errCode=$?
+    echo "> $postRs"
+    if [ $errCode -ne 0 ]; then
+        exit 0
+    fi
+    
+}
+
+#
+#############################################################
+### 填写参数配置 ###
+#############################################################
+
+# Server酱消息推送，若启用则改Server=1，填写你的SendKey
+# 官网https://sct.ftqq.com/，成功更新一次DNS解析则推送一次
+Server=0
+SendKey=SCr2181346dsgnnww564631aEsr2C
+
+# 启用动态更新ipv4记录类型A则改ipv4=1，启用动态更新ipv6记录类型AAAA则改ipv6=1，默认关闭=0，也可同时启用
+# 填写arToken=(格式："ID,Token")
+# 填写arDdnsCheck (格式："一级主域名" "主机记录"，如："baidu.com" "www")
+ipv4=0
+    if [ "$ipv4" = "1" ]; then
+arToken="123456,fsr2181346dsgstat4564631aw22"
+arDdnsCheck "baidu.com" "www" 4
+    fi
+
+ipv6=0
+    if [ "$ipv6" = "1" ]; then
+arToken="123456,fsr2181346dsgstat4564631aw22"
+arDdnsCheck "baidu.com" "www" 6
+    fi
+	
+#############################################################
+#
+
+
+
