@@ -1,5 +1,5 @@
 # dnspod_magisk
-这是一个运行在安卓设备上的dnspod_magisk模块。
+这是一个运行在安卓设备上的dnspod_magisk模块，移植于源码ArDNSPod。
 
 [下载页面](https://github.com/410154425/dnspod_magisk/releases)点击Assets选择压缩包dnspod_magisk_***.zip，使用Magisk从本地安装。
 
