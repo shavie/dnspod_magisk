@@ -1,1 +1,2 @@
 # dnspod_magisk
+使用DNSPOD API实现域名动态解析ddns，每60秒执行一次脚本检测，支持本机ipv6，外网ipv4，使用前填写Token、域名参数到配置文件dnspod最底部
